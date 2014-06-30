@@ -17,6 +17,8 @@ We use VID/PID 0x046D/0xC00E which is taken from a Logitech mouse. Don't
 publish any hardware using these IDs! This is for demonstration only!
 */
 
+#include <stdlib.h>         /* for utoa() */
+#include <string.h>         /* for strlen() */
 #include <avr/io.h>
 #include <avr/wdt.h>
 #include <avr/interrupt.h>  /* for sei() */
@@ -46,19 +48,16 @@ PROGMEM const char usbHidReportDescriptor[27] = { /* USB report descriptor, size
     0xC0,                          // END COLLECTION
 };
 
-typedef struct{
-    uchar    key;
-}report_t;
 
-static report_t reportBuffer;
-static uchar    idleRate;   /* repeat rate for keyboards, never used for mice */
-static uint32_t cardNumber;
+static uchar reportBuffer;
+static uchar idleRate;   /* repeat rate for keyboards, never used for mice */
+static char  message[12] = {0};
 
 /* ------------------------------------------------------------------------- */
 
 usbMsgLen_t usbFunctionSetup(uchar data[8])
 {
-usbRequest_t    *rq = (void *)data;
+	usbRequest_t *rq = (void *)data;
 
     /* The following requests are never used. But since they are required by
      * the specification, we implement them in this example.
@@ -80,12 +79,46 @@ usbRequest_t    *rq = (void *)data;
     return 0;   /* default for not implemented requests: return no data back to host */
 }
 
-uchar addCardNum(uint32_t num) {
-	if (cardNumber==0 && reportBuffer.key==0) {
-		cardNumber = num;
+int addCardNum(uint32_t num) {
+	if (message[0]==0 && reportBuffer==0) {
+		ultoa(num, message, 10);
+		int len = strlen(message);
+		message[len] = '\n';
+		message[len+1] = '\0';
+		return 0;
 	}
+	return -1;
 }
 
+/**
+ * ASCII to KEY CODE mapper
+ * @param c character to convert to key code
+ * @return key code to send via USB
+ */
+uint8_t charToKey(char c) {
+	if (c==47) return 2;  // /
+	if (c==42) return 3;  // *
+	if (c==45) return 4;  // -
+	if (c==43) return 5;  // +
+	if (c==10) return 6;  // \n
+	if (c>=49 && c<=57) { // 1-9
+		return c-49+7;
+	}
+	if (c==48) return 16; // 0
+	if (c==46) return 17; // .
+	return 0;
+}
+
+char arrayShift(char* arr) {
+	char result = arr[0];
+	int len = strlen(arr);
+	int i;
+	for (i=0; i<len-1; i++) {   
+		arr[i]=arr[i+1];
+	}
+	arr[len-1] = 0;
+	return result;
+}
 /* ------------------------------------------------------------------------- */
 
 int __attribute__((noreturn)) main(void)
@@ -115,40 +148,16 @@ int __attribute__((noreturn)) main(void)
     for(;;){                /* main event loop */
 		
 		// check key presses
-		if (PINC&1 == 1) {
-			reportBuffer.key=16;
-		}
 		if (PINC&2 == 2) {
-			reportBuffer.key=7;
+			addCardNum(1234567890UL);
 		}
-
 		
         wdt_reset();
         usbPoll();
         if(usbInterruptIsReady()){
             /* called after every poll of the interrupt endpoint */
-			/**
-			 * 0 null
-			 * 1 num lock
-			 * 2 /
-             * 3 *
-			 * 4 -
-			 * 5 +
-			 * 6 \n
-			 * 7 1
-			 * 8 2
-			 * 9 3
-			 * 10 4
-			 * 11 5
-			 * 12 6
-			 * 13 7
-			 * 14 8
-			 * 15 9
-			 * 16 0
-			 * 17 .
-             */
+			reportBuffer=charToKey(arrayShift(message));
             usbSetInterrupt((void *)&reportBuffer, sizeof(reportBuffer));
-			reportBuffer.key=0;
         }
     }
 }
