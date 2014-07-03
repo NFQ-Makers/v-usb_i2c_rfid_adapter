@@ -17,15 +17,7 @@ We use VID/PID 0x046D/0xC00E which is taken from a Logitech mouse. Don't
 publish any hardware using these IDs! This is for demonstration only!
 */
 
-#include <stdlib.h>         /* for utoa() */
-#include <string.h>         /* for strlen() */
-#include <avr/io.h>
-#include <avr/wdt.h>
-#include <avr/interrupt.h>  /* for sei() */
-#include <util/delay.h>     /* for _delay_ms() */
-
-#include <avr/pgmspace.h>   /* required by usbdrv.h */
-#include "usbdrv.h"
+#include <global.h> 
 
 /* ------------------------------------------------------------------------- */
 /* ----------------------------- USB interface ----------------------------- */
@@ -52,7 +44,8 @@ PROGMEM const char usbHidReportDescriptor[27] = { /* USB report descriptor, size
 static uchar reportBuffer;
 static uchar idleRate;   /* repeat rate for keyboards, never used for mice */
 static char  message[12] = {0};
-
+static uint16_t debounce = 0xffff; 
+static uchar keyUp = 0;
 /* ------------------------------------------------------------------------- */
 
 usbMsgLen_t usbFunctionSetup(uchar data[8])
@@ -77,6 +70,32 @@ usbMsgLen_t usbFunctionSetup(uchar data[8])
         /* no vendor specific requests implemented */
     }
     return 0;   /* default for not implemented requests: return no data back to host */
+}
+
+u32 getCardNumberFromReader()
+{
+	u08 deviceAddr = 100<<1;
+	u08 regAddr[1] = {0x10};
+	u08 data[4] = {0};
+	u32 number = 0;
+	i2cInit();
+	u08 dbg[2] = {0};
+	dbg[0] = i2cMasterSendNI(deviceAddr, 1, regAddr);
+	_delay_ms(1);
+	dbg[1] = i2cMasterReceiveNI(deviceAddr, 4, data);
+	//return 100+(dbg[0]*10)+(dbg[1]);
+	i2cDestroy();
+
+	number |= (u32)data[0] << 24;
+	number |= (u32)data[1] << 16;
+	number |= (u32)data[2] << 8;
+	number |= (u32)data[3];
+
+	if (number == 0xffffffff) {
+		return 0;
+	} else {
+		return number;
+	}
 }
 
 int addCardNum(uint32_t num) {
@@ -125,7 +144,10 @@ int __attribute__((noreturn)) main(void)
 {
 	uchar   i;
 
-	DDRC = 0b00000000;
+	DDRB |= 1<<5;
+	DDRB &= 0<<4;
+	PORTB |= 1<<5;
+	PORTB &= 0<<5;
 
     wdt_enable(WDTO_1S);
     /* If you don't use the watchdog, replace the call above with a wdt_disable().
@@ -147,16 +169,35 @@ int __attribute__((noreturn)) main(void)
     sei();
     for(;;){                /* main event loop */
 		
+		if (debounce>0) {
+			PORTB |= 1<<5;
+		} else {
+			PORTB &= 0<<5;
+		}
 		// check key presses
-		if (PINC&2 == 2) {
-			addCardNum(1234567890UL);
+		if (PINB&(1<<4)) {
+			if (message[0]==0 && reportBuffer==0 && debounce==0) {
+				u32 num = getCardNumberFromReader();
+				addCardNum(num);
+				debounce = 0xffff;
+			}
+		} else {
+			if (debounce) {
+				debounce--;
+			}
 		}
 		
         wdt_reset();
         usbPoll();
         if(usbInterruptIsReady()){
             /* called after every poll of the interrupt endpoint */
-			reportBuffer=charToKey(arrayShift(message));
+			if (keyUp) {
+				reportBuffer=charToKey(0);
+				keyUp = 0;
+			} else {
+				reportBuffer=charToKey(arrayShift(message));
+				keyUp = 1;
+			}
             usbSetInterrupt((void *)&reportBuffer, sizeof(reportBuffer));
         }
     }
